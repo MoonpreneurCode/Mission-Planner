@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grid-Snap Robot Mission Planner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .canvas-container { 
+            position: relative; 
+            width: 100%; 
+            height: 500px; 
+            background-color: #ffffff;
+            background-image: 
+                linear-gradient(to right, #e2e8f0 1px, transparent 1px),
+                linear-gradient(to bottom, #e2e8f0 1px, transparent 1px);
+            background-size: 40px 40px; 
+            border: 2px solid #cbd5e1;
+            border-radius: 0.5rem;
+            overflow: hidden;
+        }
+        #drawing-canvas { cursor: crosshair; }
+        .tool-btn { @apply px-4 py-2 rounded font-bold transition text-sm flex items-center justify-center gap-2; }
+        .active-tool { @apply bg-indigo-600 text-white shadow-md; }
+        .inactive-tool { @apply bg-slate-200 text-slate-700 hover:bg-slate-300; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen p-4">
+    <div class="max-w-6xl mx-auto space-y-4">
+        <header class="text-center">
+            <h1 class="text-3xl font-bold text-slate-800">📏 Grid-Snap Mission Planner</h1>
+            <p class="text-slate-600">1 Grid Block = 1 Second | Starts with Forward Motion</p>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="bg-white p-4 rounded-xl shadow border space-y-4">
+                <div>
+                    <h2 class="font-bold text-indigo-600 mb-2">1. Select Tool</h2>
+                    <div class="grid grid-cols-1 gap-2">
+                        <button id="tool-path" class="tool-btn active-tool">✏️ Grid Path (Click Points)</button>
+                        <button id="tool-rect" class="tool-btn inactive-tool">🟦 Perfect Square</button>
+                        <button id="tool-line" class="tool-btn inactive-tool">📏 Straight Line</button>
+                    </div>
+                </div>
+
+                <div class="p-3 bg-emerald-50 border border-emerald-200 rounded text-xs text-emerald-800">
+                    <strong>New Rules:</strong><br>
+                    • <b>Start Forward:</b> The first command is now always "Forward".<br>
+                    • <b>Grid Path:</b> Click multiple points on the grid to build a custom route.
+                </div>
+
+                <button id="clearCanvas" class="w-full py-2 bg-red-100 text-red-600 font-bold rounded">🗑️ Reset Mission</button>
+                <button id="generateCSV" class="w-full py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-lg disabled:opacity-50" disabled>📥 Download CSV</button>
+                
+                <div id="path-stats" class="text-[10px] text-slate-500 font-mono">Steps recorded: 0</div>
+            </div>
+
+            <div class="md:col-span-3">
+                <div class="canvas-container" id="container">
+                    <canvas id="drawing-canvas"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('drawing-canvas');
+        const ctx = canvas.getContext('2d');
+        const GRID_SIZE = 40; 
+        const STEPS_PER_GRID = 10; 
+        const PIVOT_90_STEPS = 6; 
+
+        let currentTool = 'path';
+        let isDrawing = false;
+        let startX, startY;
+        let pathPoints = []; 
+        let pathCommands = [];
+        let robotAngle = null; 
+
+        function init() {
+            canvas.width = document.getElementById('container').clientWidth;
+            canvas.height = document.getElementById('container').clientHeight;
+            drawUI();
+        }
+        window.addEventListener('resize', init);
+        init();
+
+        document.querySelectorAll('.tool-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tool-btn').forEach(b => b.classList.replace('active-tool', 'inactive-tool'));
+                btn.classList.replace('inactive-tool', 'active-tool');
+                currentTool = btn.id.replace('tool-', '');
+                resetData();
+            });
+        });
+
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.round((e.clientX - rect.left) / GRID_SIZE) * GRID_SIZE;
+            const y = Math.round((e.clientY - rect.top) / GRID_SIZE) * GRID_SIZE;
+
+            if (currentTool === 'path') {
+                pathPoints.push({x, y});
+                if (pathPoints.length > 1) {
+                    processPathToCommands();
+                }
+                redraw();
+            } else {
+                isDrawing = true;
+                startX = x;
+                startY = y;
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+            const rect = canvas.getBoundingClientRect();
+            const currX = Math.round((e.clientX - rect.left) / GRID_SIZE) * GRID_SIZE;
+            const currY = Math.round((e.clientY - rect.top) / GRID_SIZE) * GRID_SIZE;
+            
+            redraw();
+            ctx.strokeStyle = '#4f46e5';
+            ctx.setLineDash([5, 5]);
+            if (currentTool === 'line') {
+                ctx.beginPath(); ctx.moveTo(startX, startY); ctx.lineTo(currX, currY); ctx.stroke();
+            } else if (currentTool === 'rect') {
+                ctx.strokeRect(startX, startY, currX - startX, currY - startY);
+            }
+            ctx.setLineDash([]);
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            if (!isDrawing) return;
+            isDrawing = false;
+            const rect = canvas.getBoundingClientRect();
+            const endX = Math.round((e.clientX - rect.left) / GRID_SIZE) * GRID_SIZE;
+            const endY = Math.round((e.clientY - rect.top) / GRID_SIZE) * GRID_SIZE;
+
+            if (currentTool === 'line') {
+                pathPoints = [{x: startX, y: startY}, {x: endX, y: endY}];
+            } else if (currentTool === 'rect') {
+                pathPoints = [
+                    {x: startX, y: startY}, 
+                    {x: endX, y: startY}, 
+                    {x: endX, y: endY}, 
+                    {x: startX, y: endY}, 
+                    {x: startX, y: startY}
+                ];
+            }
+            processPathToCommands();
+            redraw();
+        });
+
+        function processPathToCommands() {
+            pathCommands = [];
+            robotAngle = null; 
+
+            for (let i = 1; i < pathPoints.length; i++) {
+                const p1 = pathPoints[i-1];
+                const p2 = pathPoints[i];
+                if (p1.x === p2.x && p1.y === p2.y) continue;
+
+                let targetAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
+                if (targetAngle < 0) targetAngle += 360;
+
+                // INITIALIZATION: If this is the first movement, assume robot is already facing the target
+                if (robotAngle === null) {
+                    robotAngle = targetAngle;
+                } else {
+                    // Subsequent turns
+                    let diff = targetAngle - robotAngle;
+                    while (diff > 180) diff -= 360;
+                    while (diff < -180) diff += 360;
+
+                    if (Math.abs(diff) > 5) {
+                        const turnSteps = Math.round(Math.abs(diff) / 15);
+                        pathCommands.push({ dir: diff > 0 ? 'C' : 'B', steps: turnSteps });
+                        robotAngle = targetAngle;
+                    }
+                }
+
+                // Move Forward
+                const dist = Math.sqrt((p2.x-p1.x)**2 + (p2.y-p1.y)**2);
+                const moveSteps = Math.round((dist / GRID_SIZE) * STEPS_PER_GRID);
+                pathCommands.push({ dir: 'A', steps: moveSteps });
+            }
+            
+            document.getElementById('generateCSV').disabled = pathCommands.length === 0;
+            document.getElementById('path-stats').innerText = `Steps recorded: ${pathCommands.length}`;
+        }
+
+        function redraw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (pathPoints.length < 1) return;
+            
+            ctx.beginPath();
+            ctx.strokeStyle = '#4f46e5';
+            ctx.lineWidth = 4;
+            ctx.lineJoin = 'round';
+            ctx.moveTo(pathPoints[0].x, pathPoints[0].y);
+            pathPoints.forEach(p => ctx.lineTo(p.x, p.y));
+            ctx.stroke();
+
+            // Draw points for "Path" tool
+            if (currentTool === 'path') {
+                ctx.fillStyle = '#4f46e5';
+                pathPoints.forEach(p => {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            }
+        }
+
+        function resetData() {
+            pathPoints = [];
+            pathCommands = [];
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+            document.getElementById('generateCSV').disabled = true;
+            document.getElementById('path-stats').innerText = `Steps recorded: 0`;
+        }
+
+        document.getElementById('generateCSV').addEventListener('click', () => {
+            let csv = "SR,A,B,C,D\n";
+            let sr = 1;
+            pathCommands.forEach(cmd => {
+                for (let i = 0; i < cmd.steps; i++) {
+                    csv += `${sr++},${cmd.dir==='A'?1:0},${cmd.dir==='B'?1:0},${cmd.dir==='C'?1:0},${cmd.dir==='D'?1:0}\n`;
+                }
+            });
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url; a.download = "robot_mission.csv"; a.click();
+        });
+
+        document.getElementById('clearCanvas').addEventListener('click', resetData);
+        function drawUI() {}
+    </script>
+</body>
+</html>
