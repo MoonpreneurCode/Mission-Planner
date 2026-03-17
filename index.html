@@ -174,7 +174,7 @@
 
                     if (Math.abs(diff) > 5) {
                         const turnSteps = Math.round(Math.abs(diff) / 15);
-                        pathCommands.push({ dir: diff > 0 ? 'C' : 'B', steps: turnSteps });
+                        pathCommands.push({ dir: diff > 0 ? 'B' : 'C', steps: turnSteps });
                         robotAngle = targetAngle;
                     }
                 }
